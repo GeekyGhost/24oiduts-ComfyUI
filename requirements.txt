@@ -1,0 +1,21 @@
+# Studio42 Background Removal & Video Processing - Requirements
+# Only install what's actually needed
+
+# Core requirements (always needed)
+Pillow>=10.3.0
+opencv-python>=4.9.0.80
+numpy>=1.26.4
+
+# For rembg models (optional - graceful fallback)
+onnxruntime-gpu>=1.18.0
+rembg[gpu]>=2.0.57
+
+# For BiRefNet models (optional - graceful fallback)
+transformers>=4.30.0
+timm
+
+# For video processing (required for video features)
+ffmpeg-python>=0.2.0
+
+# Everything else (torch, PIL, numpy, opencv) is already in ComfyUI
+# Note: System FFmpeg installation recommended for optimal video performance

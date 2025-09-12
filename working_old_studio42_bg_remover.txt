@@ -1,0 +1,1120 @@
+import torch
+import numpy as np
+from PIL import Image, ImageFilter, ImageEnhance
+import cv2
+from enum import Enum
+from dataclasses import dataclass
+from typing import Tuple, Optional
+import logging
+import warnings
+import math
+
+# Configure logging
+logger = logging.getLogger(__name__)
+warnings.filterwarnings("ignore", category=UserWarning)
+
+# Try to import AI background removal libraries with graceful fallbacks
+try:
+    from rembg import remove, new_session
+    REMBG_AVAILABLE = True
+    logger.info("✅ Rembg library loaded successfully")
+except ImportError:
+    REMBG_AVAILABLE = False
+    logger.warning("⚠️ Rembg not available - AI methods will be disabled")
+
+class RemovalMethod(Enum):
+    """Background removal methods with proper model names - FIXED"""
+    # BiRefNet models (these actually exist in rembg 2.0)
+    BIREFNET_GENERAL = "birefnet-general"           # Best general purpose
+    BIREFNET_PORTRAIT = "birefnet-portrait"         # Best for human portraits  
+    BIREFNET_MASSIVE = "birefnet-massive"           # Highest accuracy, largest dataset
+    BIREFNET_GENERAL_LITE = "birefnet-general-lite" # Lightweight version
+    
+    # Classic reliable models
+    U2NET = "u2net"                                 # Classic U2-Net
+    U2NET_HUMAN = "u2net_human_seg"                 # U2-Net human segmentation
+    ISNET_GENERAL = "isnet-general-use"             # ISNet general model
+    
+    # Professional traditional methods (enhanced)
+    CHROMA_KEY_PROFESSIONAL = "chroma_key_professional"    # Multi-stage chroma key
+    LUMA_KEY_PROFESSIONAL = "luma_key_professional"        # Advanced luma key
+    DIFFERENCE_KEY = "difference_key"                      # Background difference
+    HYBRID_AI_TRADITIONAL = "hybrid_ai_traditional"       # AI + traditional combined
+
+@dataclass
+class BackgroundRemovalConfig:
+    """Professional configuration for background removal"""
+    method: RemovalMethod = RemovalMethod.BIREFNET_GENERAL
+    
+    # AI model settings
+    use_gpu: bool = True
+    model_precision: str = "fp16"
+    batch_size: int = 1
+    processing_resolution: int = 1024
+    maintain_aspect_ratio: bool = True
+    
+    # Professional Chroma Key Settings (Fixed & Enhanced)
+    chroma_color: str = "green"  # green, blue, red, cyan, magenta, yellow
+    primary_threshold: float = 0.15              # Primary color tolerance
+    secondary_threshold: float = 0.05            # Secondary refinement threshold
+    saturation_min: float = 0.3                 # Minimum saturation (30%)
+    brightness_min: float = 0.2                 # Minimum brightness (20%)
+    brightness_max: float = 0.95                # Maximum brightness (95%)
+    
+    # Advanced Keying Features
+    multi_pass_keying: bool = True               # Multi-stage processing
+    spill_suppression: float = 0.8               # Professional spill removal
+    spill_preserve_luminance: bool = True        # Preserve luminance during despill
+    edge_softness: float = 2.0                  # Edge blur radius
+    core_matte_choke: float = 0.0               # Tighten/expand core matte
+    
+    # Professional Luma Key Settings
+    luma_key_mode: str = "shadows_highlights"    # shadows, highlights, shadows_highlights
+    shadow_threshold: float = 0.1               # Shadow removal threshold
+    highlight_threshold: float = 0.9            # Highlight removal threshold
+    luma_softness: float = 0.1                  # Luma key softness
+    
+    # Difference Key Settings
+    difference_threshold: float = 0.1           # Difference sensitivity
+    
+    # Post-processing (Professional)
+    garbage_matte_enabled: bool = False         # Auto garbage matte
+    remove_small_objects: bool = True
+    small_object_threshold: int = 500           # Pixels
+    edge_detection_enabled: bool = True         # Advanced edge detection
+    morphological_operations: bool = True       # Erosion/dilation cleanup
+    mask_dilation: int = 1                      # Expand mask
+    mask_erosion: int = 1                       # Contract mask
+    mask_blur: float = 1.0                      # Final mask blur
+    color_space_mode: str = "hsv"              # hsv, lab, rgb
+
+class ProfessionalBackgroundRemover:
+    """Professional background removal with advanced techniques from VFX industry"""
+    
+    def __init__(self):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.rembg_sessions = {}
+        self.reference_background = None  # For difference keying
+        logger.info(f"🎬 Professional Background Remover initialized on {self.device}")
+    
+    def remove_background(self, image: Image.Image, config: BackgroundRemovalConfig, 
+                         reference_bg: Optional[Image.Image] = None) -> Tuple[Image.Image, Image.Image]:
+        """Main background removal with professional multi-stage processing"""
+        
+        try:
+            # Ensure RGB format
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            # Store reference background for difference keying
+            if reference_bg is not None:
+                self.reference_background = reference_bg.convert('RGB') if reference_bg.mode != 'RGB' else reference_bg
+            
+            # Route to appropriate method
+            if config.method in [RemovalMethod.BIREFNET_GENERAL, RemovalMethod.BIREFNET_PORTRAIT, 
+                                RemovalMethod.BIREFNET_MASSIVE, RemovalMethod.BIREFNET_GENERAL_LITE,
+                                RemovalMethod.U2NET, RemovalMethod.U2NET_HUMAN, RemovalMethod.ISNET_GENERAL]:
+                if REMBG_AVAILABLE:
+                    return self._remove_with_rembg(image, config)
+                else:
+                    logger.warning("🔄 Rembg not available, falling back to professional chroma key")
+                    config.method = RemovalMethod.CHROMA_KEY_PROFESSIONAL
+                    return self._remove_with_professional_chroma_key(image, config)
+            
+            elif config.method == RemovalMethod.CHROMA_KEY_PROFESSIONAL:
+                return self._remove_with_professional_chroma_key(image, config)
+            
+            elif config.method == RemovalMethod.LUMA_KEY_PROFESSIONAL:
+                return self._remove_with_professional_luma_key(image, config)
+            
+            elif config.method == RemovalMethod.DIFFERENCE_KEY:
+                return self._remove_with_difference_key(image, config)
+            
+            elif config.method == RemovalMethod.HYBRID_AI_TRADITIONAL:
+                return self._remove_hybrid_professional(image, config)
+            
+            else:
+                raise ValueError(f"Unknown removal method: {config.method}")
+        
+        except Exception as e:
+            logger.error(f"❌ Professional background removal failed: {e}")
+            # Return original image with full opacity mask as fallback
+            mask = Image.new('L', image.size, 255)
+            return image, mask
+    
+    def _remove_with_rembg(self, image: Image.Image, config: BackgroundRemovalConfig) -> Tuple[Image.Image, Image.Image]:
+        """Remove background using Rembg library with corrected model names"""
+        
+        # CORRECTED: Map to actual rembg model names
+        model_map = {
+            RemovalMethod.BIREFNET_GENERAL: "birefnet-general",
+            RemovalMethod.BIREFNET_PORTRAIT: "birefnet-portrait", 
+            RemovalMethod.BIREFNET_MASSIVE: "birefnet-massive",
+            RemovalMethod.BIREFNET_GENERAL_LITE: "birefnet-general-lite",
+            RemovalMethod.U2NET: "u2net",
+            RemovalMethod.U2NET_HUMAN: "u2net_human_seg",
+            RemovalMethod.ISNET_GENERAL: "isnet-general-use",
+        }
+        
+        model_name = model_map.get(config.method, "u2net")
+        
+        # Get or create session
+        if model_name not in self.rembg_sessions:
+            try:
+                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if config.use_gpu else ['CPUExecutionProvider']
+                session = new_session(model_name, providers=providers)
+                self.rembg_sessions[model_name] = session
+                logger.info(f"✅ Loaded rembg model: {model_name}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to load {model_name}, using u2net: {e}")
+                session = new_session("u2net", providers=providers)
+                self.rembg_sessions[model_name] = session
+        
+        session = self.rembg_sessions[model_name]
+        
+        # Process image
+        original_size = image.size
+        
+        # Resize for processing if needed
+        if config.processing_resolution != 1024:
+            if config.maintain_aspect_ratio:
+                image = self._resize_maintain_aspect(image, config.processing_resolution)
+            else:
+                image = image.resize((config.processing_resolution, config.processing_resolution), Image.Resampling.LANCZOS)
+        
+        # Remove background
+        result = remove(image, session=session)
+        
+        # Resize back to original if needed
+        if image.size != original_size:
+            result = result.resize(original_size, Image.Resampling.LANCZOS)
+        
+        # Extract mask
+        if result.mode == 'RGBA':
+            mask = result.split()[3]
+        else:
+            result = result.convert('RGBA')
+            mask = Image.new('L', result.size, 255)
+        
+        # Post-process mask with professional techniques
+        mask = self._post_process_mask_professional(mask, config)
+        
+        # Apply final mask to create clean result
+        result_clean = Image.new('RGBA', result.size, (0, 0, 0, 0))
+        result_clean.paste(image if image.size == original_size else image.resize(original_size, Image.Resampling.LANCZOS), (0, 0))
+        result_clean.putalpha(mask)
+        
+        return result_clean, mask
+    
+    def _remove_with_professional_chroma_key(self, image: Image.Image, config: BackgroundRemovalConfig) -> Tuple[Image.Image, Image.Image]:
+        """Professional multi-stage chroma key removal (After Effects/Nuke quality)"""
+        
+        # Convert to numpy array
+        img_array = np.array(image, dtype=np.float32) / 255.0
+        
+        # Select color space for processing
+        if config.color_space_mode == "hsv":
+            working_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
+        elif config.color_space_mode == "lab":
+            working_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
+        else:  # rgb
+            working_array = img_array.copy()
+        
+        # STAGE 1: Primary Key (Core Matte)
+        primary_mask = self._extract_primary_chroma_key(working_array, config)
+        
+        # STAGE 2: Secondary Key (Edge Refinement) 
+        if config.multi_pass_keying:
+            secondary_mask = self._extract_secondary_chroma_key(working_array, primary_mask, config)
+            combined_mask = np.maximum(primary_mask, secondary_mask)
+        else:
+            combined_mask = primary_mask
+        
+        # STAGE 3: Professional Spill Suppression
+        despilled_image = self._apply_professional_spill_suppression(img_array, combined_mask, config)
+        
+        # STAGE 4: Edge Detection & Refinement
+        if config.edge_detection_enabled:
+            combined_mask = self._apply_edge_detection_refinement(despilled_image, combined_mask, config)
+        
+        # STAGE 5: Core Matte Adjustment
+        if abs(config.core_matte_choke) > 0.001:
+            combined_mask = self._apply_core_matte_choke(combined_mask, config.core_matte_choke)
+        
+        # Convert to PIL mask
+        mask_pil = Image.fromarray((combined_mask * 255).astype(np.uint8), mode='L')
+        
+        # Professional post-processing
+        mask_pil = self._post_process_mask_professional(mask_pil, config)
+        
+        # Create result image
+        result = Image.new('RGBA', image.size, (0, 0, 0, 0))
+        despilled_pil = Image.fromarray((despilled_image * 255).astype(np.uint8), 'RGB')
+        result.paste(despilled_pil, (0, 0))
+        result.putalpha(mask_pil)
+        
+        logger.info(f"✅ Professional chroma key completed: {config.chroma_color} removal with {len(np.unique(combined_mask))} matte levels")
+        
+        return result, mask_pil
+    
+    def _extract_primary_chroma_key(self, working_array: np.ndarray, config: BackgroundRemovalConfig) -> np.ndarray:
+        """Extract primary chroma key (core matte) using professional algorithms"""
+        
+        if config.color_space_mode == "hsv":
+            return self._chroma_key_hsv_primary(working_array, config)
+        elif config.color_space_mode == "lab":
+            return self._chroma_key_lab_primary(working_array, config)
+        else:
+            return self._chroma_key_rgb_primary(working_array, config)
+    
+    def _chroma_key_hsv_primary(self, hsv_array: np.ndarray, config: BackgroundRemovalConfig) -> np.ndarray:
+        """HSV-based primary chroma key extraction (industry standard)"""
+        
+        hue = hsv_array[:, :, 0] * 360  # Convert to 0-360 degrees
+        saturation = hsv_array[:, :, 1]
+        value = hsv_array[:, :, 2]
+        
+        # Professional color ranges (corrected)
+        color_ranges = {
+            "green": (75, 165),     # Green: 75-165 degrees (professional range)
+            "blue": (200, 260),     # Blue: 200-260 degrees  
+            "red": (345, 15),       # Red: 345-360 + 0-15 degrees (wrapping)
+            "cyan": (165, 200),     # Cyan: 165-200 degrees
+            "magenta": (280, 340),  # Magenta: 280-340 degrees
+            "yellow": (45, 75),     # Yellow: 45-75 degrees
+        }
+        
+        hue_min, hue_max = color_ranges.get(config.chroma_color, color_ranges["green"])
+        
+        # Create hue mask with proper wrapping
+        if config.chroma_color == "red":
+            hue_match = (hue >= hue_min) | (hue <= hue_max)
+        else:
+            hue_match = (hue >= hue_min) & (hue <= hue_max)
+        
+        # Professional multi-threshold approach
+        saturation_match = saturation > config.saturation_min
+        brightness_match = (value > config.brightness_min) & (value < config.brightness_max)
+        
+        # Combine criteria for background detection
+        background_mask = hue_match & saturation_match & brightness_match
+        
+        # Create foreground mask (inverted)
+        foreground_mask = (~background_mask).astype(np.float32)
+        
+        # Apply primary threshold with soft edge
+        if config.primary_threshold > 0:
+            # Calculate distance from target hue
+            if config.chroma_color == "red":
+                hue_center = (hue_min + 360 + hue_max) / 2
+                if hue_center > 360:
+                    hue_center -= 360
+                hue_dist = np.minimum(
+                    np.abs(hue - hue_center),
+                    360 - np.abs(hue - hue_center)
+                )
+            else:
+                hue_center = (hue_min + hue_max) / 2
+                hue_dist = np.abs(hue - hue_center)
+            
+            # Normalize and apply threshold
+            hue_range = (hue_max - hue_min) if config.chroma_color != "red" else (hue_min + 360 - hue_max)
+            normalized_dist = hue_dist / (hue_range / 2)
+            threshold_mask = normalized_dist < (config.primary_threshold * 2)
+            
+            # Soft transition
+            soft_mask = np.clip(normalized_dist / config.primary_threshold, 0, 1)
+            foreground_mask = np.where(threshold_mask, 1.0 - soft_mask, 1.0)
+        
+        return foreground_mask
+    
+    def _chroma_key_lab_primary(self, lab_array: np.ndarray, config: BackgroundRemovalConfig) -> np.ndarray:
+        """LAB color space chroma key (professional alternative)"""
+        
+        l_channel = lab_array[:, :, 0]
+        a_channel = lab_array[:, :, 1]
+        b_channel = lab_array[:, :, 2]
+        
+        # LAB color ranges for different chroma keys
+        color_ranges = {
+            "green": {"a": (-50, -20), "b": (20, 50)},
+            "blue": {"a": (10, 40), "b": (-80, -40)},
+            "red": {"a": (40, 80), "b": (20, 60)},
+            "cyan": {"a": (-60, -30), "b": (-30, 0)},
+            "magenta": {"a": (60, 90), "b": (-20, 20)},
+            "yellow": {"a": (-20, 10), "b": (50, 90)},
+        }
+        
+        ranges = color_ranges.get(config.chroma_color, color_ranges["green"])
+        
+        # Check if pixel is in target color range
+        a_match = (a_channel >= ranges["a"][0]) & (a_channel <= ranges["a"][1])
+        b_match = (b_channel >= ranges["b"][0]) & (b_channel <= ranges["b"][1])
+        l_match = (l_channel > config.brightness_min * 100) & (l_channel < config.brightness_max * 100)
+        
+        background_mask = a_match & b_match & l_match
+        foreground_mask = (~background_mask).astype(np.float32)
+        
+        return foreground_mask
+    
+    def _chroma_key_rgb_primary(self, rgb_array: np.ndarray, config: BackgroundRemovalConfig) -> np.ndarray:
+        """RGB-based chroma key (fallback method)"""
+        
+        r, g, b = rgb_array[:, :, 0], rgb_array[:, :, 1], rgb_array[:, :, 2]
+        
+        # Target channel selection based on chroma color
+        if config.chroma_color == "green":
+            target_strength = g > np.maximum(r, b) + config.primary_threshold
+        elif config.chroma_color == "blue":
+            target_strength = b > np.maximum(r, g) + config.primary_threshold
+        elif config.chroma_color == "red":
+            target_strength = r > np.maximum(g, b) + config.primary_threshold
+        else:
+            # Default to green
+            target_strength = g > np.maximum(r, b) + config.primary_threshold
+        
+        # Apply brightness constraints
+        brightness = (r + g + b) / 3
+        brightness_match = (brightness > config.brightness_min) & (brightness < config.brightness_max)
+        
+        background_mask = target_strength & brightness_match
+        foreground_mask = (~background_mask).astype(np.float32)
+        
+        return foreground_mask
+    
+    def _extract_secondary_chroma_key(self, working_array: np.ndarray, primary_mask: np.ndarray, 
+                                    config: BackgroundRemovalConfig) -> np.ndarray:
+        """Secondary pass for edge refinement (professional technique)"""
+        
+        # Find edge areas where primary key may have failed
+        edge_kernel = np.array([[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]])
+        edges = cv2.filter2D(primary_mask, -1, edge_kernel)
+        edge_areas = np.abs(edges) > 0.1
+        
+        # Apply more aggressive keying only in edge areas
+        if config.color_space_mode == "hsv":
+            secondary_mask = self._chroma_key_hsv_secondary(working_array, config, edge_areas)
+        else:
+            # Use same method but with tighter threshold
+            secondary_mask = primary_mask.copy()
+        
+        return secondary_mask
+    
+    def _chroma_key_hsv_secondary(self, hsv_array: np.ndarray, config: BackgroundRemovalConfig, 
+                                edge_areas: np.ndarray) -> np.ndarray:
+        """Secondary HSV chroma key for edge refinement"""
+        
+        hue = hsv_array[:, :, 0] * 360
+        saturation = hsv_array[:, :, 1]
+        value = hsv_array[:, :, 2]
+        
+        # Use tighter threshold for secondary pass
+        secondary_threshold = config.secondary_threshold
+        
+        # More aggressive color matching in edge areas only
+        color_ranges = {
+            "green": (75, 165),
+            "blue": (200, 260),
+            "red": (345, 15),
+            "cyan": (165, 200),
+            "magenta": (280, 340),
+            "yellow": (45, 75),
+        }
+        
+        hue_min, hue_max = color_ranges.get(config.chroma_color, color_ranges["green"])
+        
+        if config.chroma_color == "red":
+            hue_match = (hue >= hue_min) | (hue <= hue_max)
+        else:
+            hue_match = (hue >= hue_min) & (hue <= hue_max)
+        
+        # Tighter constraints for secondary
+        saturation_match = saturation > (config.saturation_min - 0.1)
+        brightness_match = (value > (config.brightness_min - 0.1)) & (value < (config.brightness_max + 0.1))
+        
+        # Apply only in edge areas
+        background_mask = hue_match & saturation_match & brightness_match & edge_areas
+        secondary_mask = (~background_mask).astype(np.float32)
+        
+        return secondary_mask
+    
+    def _apply_professional_spill_suppression(self, rgb_array: np.ndarray, mask: np.ndarray, 
+                                            config: BackgroundRemovalConfig) -> np.ndarray:
+        """Professional spill suppression with luminance preservation (After Effects quality)"""
+        
+        if config.spill_suppression <= 0:
+            return rgb_array
+        
+        # Convert to working color space
+        if config.color_space_mode == "hsv":
+            working_array = cv2.cvtColor(rgb_array, cv2.COLOR_RGB2HSV)
+            spill_channel = 0  # Hue channel
+        elif config.color_space_mode == "lab":
+            working_array = cv2.cvtColor(rgb_array, cv2.COLOR_RGB2LAB)
+            spill_channel = 1 if config.chroma_color == "green" else 2  # A or B channel
+        else:
+            working_array = rgb_array.copy()
+            # Select channel based on chroma color
+            spill_channel = {"green": 1, "blue": 2, "red": 0}.get(config.chroma_color, 1)
+        
+        # Create spill map (areas affected by color spill)
+        spill_map = self._create_spill_map(working_array, config)
+        
+        # Apply spill suppression
+        corrected_array = working_array.copy()
+        
+        if config.spill_preserve_luminance and config.color_space_mode == "hsv":
+            # Preserve luminance (Value channel) while correcting hue/saturation
+            spill_strength = spill_map * config.spill_suppression
+            
+            # Neutralize hue in spill areas
+            target_hue = self._get_neutral_hue(config.chroma_color)
+            corrected_array[:, :, 0] = np.where(
+                spill_map > 0.1,
+                working_array[:, :, 0] * (1 - spill_strength) + target_hue * spill_strength,
+                working_array[:, :, 0]
+            )
+            
+            # Reduce saturation in spill areas
+            corrected_array[:, :, 1] = working_array[:, :, 1] * (1 - spill_strength * 0.5)
+            
+        else:
+            # Standard spill suppression
+            spill_strength = spill_map * config.spill_suppression
+            corrected_array[:, :, spill_channel] *= (1 - spill_strength)
+        
+        # Convert back to RGB
+        if config.color_space_mode == "hsv":
+            result = cv2.cvtColor(corrected_array, cv2.COLOR_HSV2RGB)
+        elif config.color_space_mode == "lab":
+            result = cv2.cvtColor(corrected_array, cv2.COLOR_LAB2RGB)
+        else:
+            result = corrected_array
+        
+        return result
+    
+    def _create_spill_map(self, working_array: np.ndarray, config: BackgroundRemovalConfig) -> np.ndarray:
+        """Create spill map indicating areas affected by color spill"""
+        
+        if config.color_space_mode == "hsv":
+            hue = working_array[:, :, 0] * 360
+            saturation = working_array[:, :, 1]
+            
+            # Define spill detection ranges (wider than main key)
+            color_ranges = {
+                "green": (60, 180),
+                "blue": (180, 280),  
+                "red": (320, 40),
+                "cyan": (150, 210),
+                "magenta": (270, 350),
+                "yellow": (30, 90),
+            }
+            
+            hue_min, hue_max = color_ranges.get(config.chroma_color, color_ranges["green"])
+            
+            if config.chroma_color == "red":
+                hue_in_range = (hue >= hue_min) | (hue <= hue_max)
+            else:
+                hue_in_range = (hue >= hue_min) & (hue <= hue_max)
+            
+            # Spill strength based on saturation and distance from neutral
+            spill_strength = saturation * hue_in_range.astype(np.float32)
+            spill_map = np.clip(spill_strength - 0.2, 0, 1)  # Only consider significant spill
+            
+        else:
+            # For RGB/LAB, use channel dominance
+            if config.chroma_color == "green":
+                dominant_channel = working_array[:, :, 1] > np.maximum(working_array[:, :, 0], working_array[:, :, 2])
+            elif config.chroma_color == "blue":
+                dominant_channel = working_array[:, :, 2] > np.maximum(working_array[:, :, 0], working_array[:, :, 1])
+            else:  # red
+                dominant_channel = working_array[:, :, 0] > np.maximum(working_array[:, :, 1], working_array[:, :, 2])
+            
+            spill_map = dominant_channel.astype(np.float32) * 0.5
+        
+        # Smooth the spill map
+        spill_map = cv2.GaussianBlur(spill_map, (5, 5), 1.0)
+        
+        return spill_map
+    
+    def _get_neutral_hue(self, chroma_color: str) -> float:
+        """Get neutral hue value for spill suppression"""
+        neutral_hues = {
+            "green": 0.08,   # Skin tone hue (30 degrees / 360)
+            "blue": 0.08,    # Skin tone hue
+            "red": 0.33,     # Cyan (opposite of red)
+            "cyan": 0.0,     # Red (opposite of cyan)
+            "magenta": 0.25, # Green (opposite of magenta)
+            "yellow": 0.67,  # Blue (opposite of yellow)
+        }
+        return neutral_hues.get(chroma_color, 0.08)
+    
+    def _apply_edge_detection_refinement(self, image_array: np.ndarray, mask: np.ndarray, 
+                                       config: BackgroundRemovalConfig) -> np.ndarray:
+        """Apply edge detection for mask refinement (professional technique)"""
+        
+        # Convert to grayscale for edge detection
+        gray = np.dot(image_array, [0.299, 0.587, 0.114])
+        
+        # Apply Canny edge detection
+        edges = cv2.Canny((gray * 255).astype(np.uint8), 50, 150)
+        edges = edges.astype(np.float32) / 255.0
+        
+        # Dilate edges slightly
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        edges = cv2.dilate(edges, kernel, iterations=1)
+        
+        # Use edges to refine mask boundaries
+        # Strong edges should preserve the mask
+        edge_strength = cv2.GaussianBlur(edges, (5, 5), 1.0)
+        refined_mask = mask * (1 - edge_strength * 0.3) + mask * edge_strength
+        
+        return np.clip(refined_mask, 0, 1)
+    
+    def _apply_core_matte_choke(self, mask: np.ndarray, choke_amount: float) -> np.ndarray:
+        """Apply core matte choke (expand/contract matte)"""
+        
+        if abs(choke_amount) < 0.001:
+            return mask
+        
+        # Convert to 8-bit for morphological operations
+        mask_8bit = (mask * 255).astype(np.uint8)
+        
+        if choke_amount > 0:
+            # Positive choke = erode (contract matte)
+            kernel_size = int(abs(choke_amount) * 5) + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            result = cv2.erode(mask_8bit, kernel, iterations=1)
+        else:
+            # Negative choke = dilate (expand matte)
+            kernel_size = int(abs(choke_amount) * 5) + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            result = cv2.dilate(mask_8bit, kernel, iterations=1)
+        
+        return result.astype(np.float32) / 255.0
+    
+    def _remove_with_professional_luma_key(self, image: Image.Image, config: BackgroundRemovalConfig) -> Tuple[Image.Image, Image.Image]:
+        """Professional luma key removal (shadows/highlights)"""
+        
+        # Convert to grayscale
+        img_array = np.array(image, dtype=np.float32) / 255.0
+        gray = np.dot(img_array, [0.299, 0.587, 0.114])
+        
+        # Create foreground mask based on luma key mode
+        if config.luma_key_mode == "shadows":
+            # Remove shadows (dark areas)
+            background_mask = gray < config.shadow_threshold
+        elif config.luma_key_mode == "highlights":
+            # Remove highlights (bright areas)
+            background_mask = gray > config.highlight_threshold
+        else:  # shadows_highlights
+            # Remove both shadows and highlights
+            background_mask = (gray < config.shadow_threshold) | (gray > config.highlight_threshold)
+        
+        # Create soft transition
+        if config.luma_softness > 0:
+            if config.luma_key_mode == "shadows":
+                soft_factor = np.clip((gray - config.shadow_threshold) / config.luma_softness, 0, 1)
+            elif config.luma_key_mode == "highlights":
+                soft_factor = np.clip((config.highlight_threshold - gray) / config.luma_softness, 0, 1)
+            else:
+                # Combined soft transition
+                shadow_factor = np.clip((gray - config.shadow_threshold) / config.luma_softness, 0, 1)
+                highlight_factor = np.clip((config.highlight_threshold - gray) / config.luma_softness, 0, 1)
+                soft_factor = np.minimum(shadow_factor, highlight_factor)
+            
+            foreground_mask = np.where(background_mask, 0.0, soft_factor)
+        else:
+            foreground_mask = (~background_mask).astype(np.float32)
+        
+        # Convert to PIL mask
+        mask_pil = Image.fromarray((foreground_mask * 255).astype(np.uint8), mode='L')
+        
+        # Post-process mask
+        mask_pil = self._post_process_mask_professional(mask_pil, config)
+        
+        # Create result image
+        result = Image.new('RGBA', image.size, (0, 0, 0, 0))
+        result.paste(image, (0, 0))
+        result.putalpha(mask_pil)
+        
+        logger.info(f"✅ Professional luma key completed: {config.luma_key_mode} mode")
+        
+        return result, mask_pil
+    
+    def _remove_with_difference_key(self, image: Image.Image, config: BackgroundRemovalConfig) -> Tuple[Image.Image, Image.Image]:
+        """Difference key removal (compare against reference background)"""
+        
+        if self.reference_background is None:
+            logger.warning("⚠️ No reference background provided for difference key, falling back to chroma key")
+            return self._remove_with_professional_chroma_key(image, config)
+        
+        # Ensure same size
+        if image.size != self.reference_background.size:
+            ref_bg = self.reference_background.resize(image.size, Image.Resampling.LANCZOS)
+        else:
+            ref_bg = self.reference_background
+        
+        # Convert to arrays
+        current_array = np.array(image, dtype=np.float32) / 255.0
+        reference_array = np.array(ref_bg, dtype=np.float32) / 255.0
+        
+        # Calculate difference
+        diff = np.abs(current_array - reference_array)
+        diff_magnitude = np.sqrt(np.sum(diff ** 2, axis=2))
+        
+        # Create foreground mask (pixels that differ significantly from reference)
+        foreground_mask = diff_magnitude > config.difference_threshold
+        
+        # Apply morphological operations to clean up
+        mask_8bit = (foreground_mask * 255).astype(np.uint8)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        mask_8bit = cv2.morphologyEx(mask_8bit, cv2.MORPH_CLOSE, kernel)
+        mask_8bit = cv2.morphologyEx(mask_8bit, cv2.MORPH_OPEN, kernel)
+        
+        foreground_mask = mask_8bit.astype(np.float32) / 255.0
+        
+        # Convert to PIL mask
+        mask_pil = Image.fromarray((foreground_mask * 255).astype(np.uint8), mode='L')
+        
+        # Post-process mask
+        mask_pil = self._post_process_mask_professional(mask_pil, config)
+        
+        # Create result image
+        result = Image.new('RGBA', image.size, (0, 0, 0, 0))
+        result.paste(image, (0, 0))
+        result.putalpha(mask_pil)
+        
+        logger.info(f"✅ Difference key completed with threshold {config.difference_threshold}")
+        
+        return result, mask_pil
+    
+    def _remove_hybrid_professional(self, image: Image.Image, config: BackgroundRemovalConfig) -> Tuple[Image.Image, Image.Image]:
+        """Hybrid AI + professional traditional methods"""
+        
+        # Get AI result first
+        if REMBG_AVAILABLE:
+            ai_config = BackgroundRemovalConfig(method=RemovalMethod.BIREFNET_GENERAL)
+            ai_result, ai_mask = self._remove_with_rembg(image, ai_config)
+        else:
+            # Fallback to luma key if no AI available
+            ai_result, ai_mask = self._remove_with_professional_luma_key(image, config)
+        
+        # Get traditional result
+        traditional_result, traditional_mask = self._remove_with_professional_chroma_key(image, config)
+        
+        # Combine masks intelligently
+        ai_mask_array = np.array(ai_mask, dtype=np.float32) / 255.0
+        traditional_mask_array = np.array(traditional_mask, dtype=np.float32) / 255.0
+        
+        # Use confidence-based blending
+        # Where AI is confident (mask values close to 0 or 1), trust it more
+        ai_confidence = np.abs(ai_mask_array - 0.5) * 2  # 0 = low confidence, 1 = high confidence
+        traditional_weight = 1.0 - ai_confidence
+        
+        # Blend masks
+        combined_mask = ai_mask_array * ai_confidence + traditional_mask_array * traditional_weight
+        combined_mask = np.clip(combined_mask, 0, 1)
+        
+        # Convert back to PIL
+        final_mask = Image.fromarray((combined_mask * 255).astype(np.uint8), mode='L')
+        
+        # Use the better image result (from traditional processing with spill suppression)
+        result = traditional_result.copy()
+        result.putalpha(final_mask)
+        
+        logger.info("✅ Hybrid AI + traditional processing completed")
+        
+        return result, final_mask
+    
+    def _post_process_mask_professional(self, mask: Image.Image, config: BackgroundRemovalConfig) -> Image.Image:
+        """Professional mask post-processing with advanced techniques"""
+        
+        mask_array = np.array(mask)
+        
+        # Auto garbage matte (remove obvious background areas)
+        if config.garbage_matte_enabled:
+            mask_array = self._apply_auto_garbage_matte(mask_array)
+        
+        # Remove small objects
+        if config.remove_small_objects and config.small_object_threshold > 0:
+            mask_array = self._remove_small_objects_professional(mask_array, config.small_object_threshold)
+        
+        # Professional morphological operations
+        if config.morphological_operations:
+            # Dilation first (expand)
+            if config.mask_dilation > 0:
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, 
+                                                 (config.mask_dilation * 2 + 1, config.mask_dilation * 2 + 1))
+                mask_array = cv2.dilate(mask_array, kernel, iterations=1)
+            
+            # Then erosion (contract) 
+            if config.mask_erosion > 0:
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, 
+                                                 (config.mask_erosion * 2 + 1, config.mask_erosion * 2 + 1))
+                mask_array = cv2.erode(mask_array, kernel, iterations=1)
+        
+        # Apply edge softness
+        if config.edge_softness > 0:
+            kernel_size = int(config.edge_softness * 2) + 1
+            mask_array = cv2.GaussianBlur(mask_array, (kernel_size, kernel_size), config.edge_softness / 3.0)
+        
+        # Final mask blur
+        if config.mask_blur > 0:
+            mask_array = cv2.GaussianBlur(mask_array, (0, 0), config.mask_blur)
+        
+        return Image.fromarray(mask_array, mode='L')
+    
+    def _apply_auto_garbage_matte(self, mask_array: np.ndarray) -> np.ndarray:
+        """Apply automatic garbage matte to remove obvious background areas"""
+        
+        # Find the largest connected component (likely the main subject)
+        contours, _ = cv2.findContours(mask_array, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            # Find largest contour
+            largest_contour = max(contours, key=cv2.contourArea)
+            
+            # Create mask from largest contour with some expansion
+            garbage_matte = np.zeros_like(mask_array)
+            cv2.fillPoly(garbage_matte, [largest_contour], 255)
+            
+            # Expand the garbage matte slightly
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (20, 20))
+            garbage_matte = cv2.dilate(garbage_matte, kernel, iterations=1)
+            
+            # Apply garbage matte
+            mask_array = cv2.bitwise_and(mask_array, garbage_matte)
+        
+        return mask_array
+    
+    def _remove_small_objects_professional(self, mask_array: np.ndarray, threshold: int) -> np.ndarray:
+        """Professional small object removal with connectivity analysis"""
+        
+        # Use connected components analysis
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_array, connectivity=8)
+        
+        # Keep only components larger than threshold
+        for i in range(1, num_labels):  # Skip background (label 0)
+            area = stats[i, cv2.CC_STAT_AREA]
+            if area < threshold:
+                mask_array[labels == i] = 0
+        
+        return mask_array
+    
+    def _resize_maintain_aspect(self, image: Image.Image, target_size: int) -> Image.Image:
+        """Resize image maintaining aspect ratio"""
+        w, h = image.size
+        if w > h:
+            new_w = target_size
+            new_h = int(h * target_size / w)
+        else:
+            new_h = target_size
+            new_w = int(w * target_size / h)
+        
+        return image.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+
+class Studio42BackgroundRemover:
+    """
+    🎬 Studio42 Background Remover - Professional Edition v2.0
+    
+    Advanced background removal incorporating professional VFX techniques:
+    - Multi-stage chroma keying (After Effects/Nuke quality)
+    - Professional spill suppression with luminance preservation
+    - Advanced edge detection and refinement
+    - Difference keying for clean backgrounds
+    - Core matte adjustment and garbage matte removal
+    - Multi-pass processing for complex scenes
+    - Support for HSV, LAB, and RGB color spaces
+    
+    FIXED ISSUES:
+    ✅ Corrected rembg model names (birefnet-general, etc.)
+    ✅ Professional multi-stage chroma key pipeline
+    ✅ Advanced spill suppression algorithms
+    ✅ Edge detection and refinement
+    ✅ ComfyUI IMAGE/MASK format compatibility
+    ✅ No dependency conflicts
+    """
+    
+    def __init__(self):
+        self.remover = ProfessionalBackgroundRemover()
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "method": ([method.value for method in RemovalMethod], {
+                    "default": RemovalMethod.BIREFNET_GENERAL.value
+                }),
+            },
+            "optional": {
+                # Reference image for difference keying
+                "reference_background": ("IMAGE",),
+                
+                # AI model settings
+                "processing_resolution": ("INT", {
+                    "default": 1024, "min": 256, "max": 2048, "step": 64,
+                    "tooltip": "Higher resolution = better quality but slower processing"
+                }),
+                "use_gpu": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Use GPU acceleration if available"
+                }),
+                
+                # Professional Chroma Key Settings
+                "chroma_color": (["green", "blue", "red", "cyan", "magenta", "yellow"], {
+                    "default": "green",
+                    "tooltip": "Chroma key background color to remove"
+                }),
+                "primary_threshold": ("FLOAT", {
+                    "default": 0.15, "min": 0.01, "max": 0.5, "step": 0.01,
+                    "tooltip": "Primary color tolerance (lower = more precise)"
+                }),
+                "secondary_threshold": ("FLOAT", {
+                    "default": 0.05, "min": 0.01, "max": 0.3, "step": 0.01,
+                    "tooltip": "Secondary refinement threshold for edges"
+                }),
+                "saturation_threshold": ("FLOAT", {
+                    "default": 0.3, "min": 0.1, "max": 1.0, "step": 0.05,
+                    "tooltip": "Minimum saturation to be considered chroma key"
+                }),
+                "brightness_min": ("FLOAT", {
+                    "default": 0.2, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "Minimum brightness for chroma key"
+                }),
+                "brightness_max": ("FLOAT", {
+                    "default": 0.95, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "Maximum brightness for chroma key"
+                }),
+                
+                # Advanced Features
+                "multi_pass_keying": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Enable multi-stage processing for better edges"
+                }),
+                "spill_suppression": ("FLOAT", {
+                    "default": 0.8, "min": 0.0, "max": 1.0, "step": 0.1,
+                    "tooltip": "Remove color bleeding on subject edges"
+                }),
+                "spill_preserve_luminance": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Preserve brightness during spill removal"
+                }),
+                "edge_softness": ("FLOAT", {
+                    "default": 2.0, "min": 0.0, "max": 10.0, "step": 0.5,
+                    "tooltip": "Edge blur for smooth transitions"
+                }),
+                "core_matte_choke": ("FLOAT", {
+                    "default": 0.0, "min": -0.5, "max": 0.5, "step": 0.05,
+                    "tooltip": "Expand (negative) or contract (positive) the matte"
+                }),
+                
+                # Luma Key Settings
+                "luma_key_mode": (["shadows", "highlights", "shadows_highlights"], {
+                    "default": "shadows_highlights",
+                    "tooltip": "Luma key removal mode"
+                }),
+                "shadow_threshold": ("FLOAT", {
+                    "default": 0.1, "min": 0.0, "max": 0.5, "step": 0.05,
+                    "tooltip": "Shadow removal threshold"
+                }),
+                "highlight_threshold": ("FLOAT", {
+                    "default": 0.9, "min": 0.5, "max": 1.0, "step": 0.05,
+                    "tooltip": "Highlight removal threshold"
+                }),
+                "luma_softness": ("FLOAT", {
+                    "default": 0.1, "min": 0.0, "max": 0.5, "step": 0.01,
+                    "tooltip": "Luma key soft transition"
+                }),
+                
+                # Difference Key Settings
+                "difference_threshold": ("FLOAT", {
+                    "default": 0.1, "min": 0.01, "max": 0.5, "step": 0.01,
+                    "tooltip": "Difference key sensitivity"
+                }),
+                
+                # Color Space
+                "color_space_mode": (["hsv", "lab", "rgb"], {
+                    "default": "hsv",
+                    "tooltip": "Color space for processing (HSV recommended)"
+                }),
+                
+                # Professional Post-processing
+                "garbage_matte_enabled": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Automatically remove obvious background areas"
+                }),
+                "edge_detection_enabled": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Use edge detection for mask refinement"
+                }),
+                "morphological_operations": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Apply erosion/dilation for cleanup"
+                }),
+                "remove_small_objects": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Remove small noise objects from mask"
+                }),
+                "small_object_threshold": ("INT", {
+                    "default": 500, "min": 50, "max": 2000, "step": 50,
+                    "tooltip": "Size threshold for small object removal (pixels)"
+                }),
+                "mask_blur": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 5.0, "step": 0.1,
+                    "tooltip": "Final mask blur for smoother edges"
+                }),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE", "MASK")
+    RETURN_NAMES = ("result_image", "result_mask")
+    FUNCTION = "remove_background"
+    CATEGORY = "🎬 Studio42/Background Removal"
+    
+    def remove_background(self, images, method="birefnet-general", reference_background=None,
+                         processing_resolution=1024, use_gpu=True, chroma_color="green", 
+                         primary_threshold=0.15, secondary_threshold=0.05, saturation_threshold=0.3,
+                         brightness_min=0.2, brightness_max=0.95, multi_pass_keying=True,
+                         spill_suppression=0.8, spill_preserve_luminance=True, edge_softness=2.0,
+                         core_matte_choke=0.0, luma_key_mode="shadows_highlights", shadow_threshold=0.1,
+                         highlight_threshold=0.9, luma_softness=0.1, difference_threshold=0.1,
+                         color_space_mode="hsv", garbage_matte_enabled=False, edge_detection_enabled=True,
+                         morphological_operations=True, remove_small_objects=True, 
+                         small_object_threshold=500, mask_blur=1.0):
+        
+        try:
+            # Create professional configuration
+            config = BackgroundRemovalConfig(
+                method=RemovalMethod(method),
+                use_gpu=use_gpu,
+                processing_resolution=processing_resolution,
+                chroma_color=chroma_color,
+                primary_threshold=primary_threshold,
+                secondary_threshold=secondary_threshold,
+                saturation_min=saturation_threshold,
+                brightness_min=brightness_min,
+                brightness_max=brightness_max,
+                multi_pass_keying=multi_pass_keying,
+                spill_suppression=spill_suppression,
+                spill_preserve_luminance=spill_preserve_luminance,
+                edge_softness=edge_softness,
+                core_matte_choke=core_matte_choke,
+                luma_key_mode=luma_key_mode,
+                shadow_threshold=shadow_threshold,
+                highlight_threshold=highlight_threshold,
+                luma_softness=luma_softness,
+                difference_threshold=difference_threshold,
+                color_space_mode=color_space_mode,
+                garbage_matte_enabled=garbage_matte_enabled,
+                edge_detection_enabled=edge_detection_enabled,
+                morphological_operations=morphological_operations,
+                remove_small_objects=remove_small_objects,
+                small_object_threshold=small_object_threshold,
+                mask_blur=mask_blur
+            )
+            
+            batch_size = images.shape[0]
+            results = []
+            masks = []
+            
+            # Convert reference background if provided
+            reference_pil = None
+            if reference_background is not None:
+                ref_tensor = reference_background[0] if len(reference_background.shape) == 4 else reference_background
+                reference_pil = self._tensor_to_pil(ref_tensor)
+            
+            logger.info(f"🎬 Processing {batch_size} images with {method} (Professional Edition)")
+            
+            # Process each image
+            for i in range(batch_size):
+                # Convert ComfyUI IMAGE tensor to PIL
+                img_tensor = images[i]
+                img_pil = self._tensor_to_pil(img_tensor)
+                
+                # Remove background with professional techniques
+                result_pil, mask_pil = self.remover.remove_background(img_pil, config, reference_pil)
+                
+                # Convert back to ComfyUI format
+                if result_pil.mode == 'RGBA':
+                    # Create RGB version by compositing on black background  
+                    result_rgb = Image.new('RGB', result_pil.size, (0, 0, 0))
+                    result_rgb.paste(result_pil, mask=result_pil.split()[3])
+                    result_tensor = self._pil_to_tensor(result_rgb)
+                else:
+                    result_tensor = self._pil_to_tensor(result_pil)
+                
+                # Convert mask to ComfyUI MASK format
+                mask_tensor = self._pil_to_mask_tensor(mask_pil)
+                
+                results.append(result_tensor)
+                masks.append(mask_tensor)
+                
+                # Progress logging
+                if (i + 1) % 5 == 0 or i == batch_size - 1:
+                    logger.info(f"📊 Processed {i + 1}/{batch_size} images")
+            
+            # Stack results
+            result_batch = torch.cat(results, dim=0)
+            mask_batch = torch.stack(masks, dim=0)
+            
+            logger.info(f"✅ Professional background removal completed: {batch_size} images processed with {method}")
+            
+            return (result_batch, mask_batch)
+            
+        except Exception as e:
+            logger.error(f"❌ Professional background removal failed: {e}")
+            # Return original images with full opacity masks as fallback
+            batch_size = images.shape[0]
+            h, w = images.shape[1], images.shape[2]
+            fallback_masks = torch.ones(batch_size, h, w, dtype=torch.float32)
+            return (images, fallback_masks)
+    
+    def _tensor_to_pil(self, tensor: torch.Tensor) -> Image.Image:
+        """Convert ComfyUI IMAGE tensor to PIL Image"""
+        # Convert to numpy and scale to 0-255
+        np_img = (tensor.cpu().numpy() * 255).astype(np.uint8)
+        
+        # Ensure RGB format
+        if len(np_img.shape) == 2:
+            np_img = np.stack([np_img, np_img, np_img], axis=-1)
+        elif np_img.shape[-1] == 4:
+            np_img = np_img[:, :, :3]  # Remove alpha if present
+        
+        return Image.fromarray(np_img, 'RGB')
+    
+    def _pil_to_tensor(self, pil_img: Image.Image) -> torch.Tensor:
+        """Convert PIL Image to ComfyUI IMAGE tensor"""
+        # Ensure RGB mode
+        if pil_img.mode != 'RGB':
+            pil_img = pil_img.convert('RGB')
+        
+        # Convert to numpy and normalize
+        np_img = np.array(pil_img).astype(np.float32) / 255.0
+        
+        # Add batch dimension
+        return torch.from_numpy(np_img).unsqueeze(0)
+    
+    def _pil_to_mask_tensor(self, pil_mask: Image.Image) -> torch.Tensor:
+        """Convert PIL mask to ComfyUI MASK tensor"""
+        # Ensure grayscale
+        if pil_mask.mode != 'L':
+            pil_mask = pil_mask.convert('L')
+        
+        # Convert to numpy and normalize
+        mask_np = np.array(pil_mask).astype(np.float32) / 255.0
+        
+        # Convert to tensor (no batch dimension for individual mask)
+        return torch.from_numpy(mask_np)
+
+
+# Node registration for ComfyUI
+NODE_CLASS_MAPPINGS = {
+    "Studio42BackgroundRemover": Studio42BackgroundRemover
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "Studio42BackgroundRemover": "🎬 Studio42 Background Remover"
+}
