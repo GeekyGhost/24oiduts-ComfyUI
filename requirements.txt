@@ -1,4 +1,4 @@
-# Studio42 Background Removal & Video Processing - Requirements
+# Studio42 Background Removal, Video & Audio Processing - Requirements
 # Only install what's actually needed
 
 # Core requirements (always needed)
@@ -17,5 +17,9 @@ timm
 # For video processing (required for video features)
 ffmpeg-python>=0.2.0
 
+# For audio processing (optional - graceful fallback)
+torchaudio>=2.0.0
+soundfile>=0.12.1
+
 # Everything else (torch, PIL, numpy, opencv) is already in ComfyUI
-# Note: System FFmpeg installation recommended for optimal video performance
+# Note: System FFmpeg installation recommended for optimal video/audio performance

@@ -7,6 +7,27 @@ import cv2
 from typing import Tuple, Optional, List
 import warnings
 import logging
+import subprocess
+import shutil
+
+# Optional backends for audio extraction
+try:
+    import moviepy.editor as mpy
+    MOVIEPY_AVAILABLE = True
+except Exception as _e:
+    MOVIEPY_AVAILABLE = False
+
+try:
+    import torchaudio
+    TORCHAUDIO_AVAILABLE = True
+except Exception:
+    TORCHAUDIO_AVAILABLE = False
+
+try:
+    import soundfile as sf
+    SOUNDFILE_AVAILABLE = True
+except Exception:
+    SOUNDFILE_AVAILABLE = False
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -17,24 +38,20 @@ warnings.filterwarnings("ignore", message=".*Importing from timm.models.registry
 
 class Studio42VideoPatchLiftLoader:
     """
-    🎬 Studio42 Video PatchLift Loader - Enhanced with Mask Output
+    Studio42 Video PatchLift Loader - Video Loading with Patch Selection
     
     Advanced video loader with patch selection capabilities for ComfyUI.
     Loads video files and allows interactive selection of patches/regions to extract from each frame.
-    
-    NEW FEATURES:
-    ✅ Mask output for extracted patches
-    ✅ Better ComfyUI integration
-    ✅ Enhanced error handling
     
     Features:
     - Load video files (mp4, webm, mkv, avi, mov, gif)
     - Visual grid preview with selection indicator
     - Frame sampling and selection controls
     - Patch extraction from video frames with masks
+    - FPS and frame count outputs
     - Outputs: Full video frames, Preview with selection overlay, Extracted patch sequence, Patch masks
     """
-    
+
     @classmethod
     def INPUT_TYPES(cls):
         input_dir = folder_paths.get_input_directory()
@@ -44,7 +61,10 @@ class Studio42VideoPatchLiftLoader:
         
         return {
             "required": {
-                "video": (sorted(files), {"video_upload": True}),
+                "video": (sorted(files), {
+                    "video_upload": True,
+                    "tooltip": "Video file to load and extract patches from"
+                }),
                 "patch_x": ("INT", {"default": 256, "min": 0, "max": 4096, "step": 1}),
                 "patch_y": ("INT", {"default": 256, "min": 0, "max": 4096, "step": 1}),
                 "patch_width": ("INT", {"default": 256, "min": 16, "max": 1024, "step": 8}),
@@ -72,11 +92,11 @@ class Studio42VideoPatchLiftLoader:
             }
         }
     
-    # UPDATED: Added MASK output
-    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "MASK", "INT", "INT", "INT", "INT")
-    RETURN_NAMES = ("video_frames", "preview_frames", "patch_frames", "patch_masks", "patch_x", "patch_y", "patch_width", "patch_height")
+    # NOTE: Added 11th return: audio (AUDIO). The first 10 are unchanged.
+    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "MASK", "INT", "INT", "INT", "INT", "FLOAT", "INT", "AUDIO")
+    RETURN_NAMES = ("video_frames", "preview_frames", "patch_frames", "patch_masks", "patch_x", "patch_y", "patch_width", "patch_height", "fps", "frame_count", "audio")
     FUNCTION = "load_video_and_patch"
-    CATEGORY = "🎬 Studio42/Video Processing"
+    CATEGORY = "Studio42/Video Processing"
     
     @classmethod
     def IS_CHANGED(cls, video, **kwargs):
@@ -109,14 +129,17 @@ class Studio42VideoPatchLiftLoader:
             # Load the video
             video_path = folder_paths.get_annotated_filepath(video)
             
-            # Load video frames using OpenCV
-            video_frames = self._load_video_opencv(
+            # Load video frames using OpenCV and get video info
+            video_frames, original_fps, total_frame_count = self._load_video_opencv(
                 video_path, frame_load_cap, skip_first_frames, select_every_nth,
                 force_rate, custom_width, custom_height
             )
             
             if not video_frames:
                 raise ValueError(f"Failed to load video: {video}")
+            
+            # Calculate final frame count (considering frame_load_cap)
+            final_frame_count = len(video_frames)
             
             # Get frame dimensions
             frame_height, frame_width = video_frames[0].shape[:2]
@@ -172,27 +195,41 @@ class Studio42VideoPatchLiftLoader:
             preview_tensor = torch.from_numpy(np.stack(preview_frames, axis=0))
             patch_tensor = torch.from_numpy(np.stack(patch_frames, axis=0))
             mask_tensor = torch.from_numpy(np.stack(patch_masks, axis=0))
+
+            # ---- Extract audio from the video (robust & Comfy-format) ----
+            effective_fps = original_fps if original_fps and original_fps > 0 else 30.0
+            est_duration = float(final_frame_count) / float(effective_fps) if effective_fps > 0 else 0.0
+            audio_out = self._extract_audio_from_video(video_path, est_duration)
+
+            logger.info(f"Video patch lift completed: {final_frame_count} frames processed @ {original_fps}fps")
             
-            logger.info(f"✅ Video patch lift completed: {len(video_frames)} frames processed")
-            
-            return (video_tensor, preview_tensor, patch_tensor, mask_tensor, patch_x, patch_y, patch_width, patch_height)
+            # Append new audio output as 11th element; first 10 remain unchanged
+            return (video_tensor, preview_tensor, patch_tensor, mask_tensor, 
+                    patch_x, patch_y, patch_width, patch_height, original_fps, final_frame_count, audio_out)
             
         except Exception as e:
-            logger.error(f"❌ Video patch lift failed: {e}")
+            logger.error(f"Video patch lift failed: {e}")
             # Create fallback tensors
             fallback_image = torch.zeros(1, 512, 512, 3, dtype=torch.float32)
             fallback_mask = torch.zeros(1, 512, 512, dtype=torch.float32)
-            return (fallback_image, fallback_image, fallback_image, fallback_mask, 0, 0, 256, 256)
+            # Fallback audio: 1s silent stereo 44.1kHz
+            fallback_audio = self._make_silence_audio(1.0, 44100, 2)
+            return (fallback_image, fallback_image, fallback_image, fallback_mask, 0, 0, 256, 256, 30.0, 1, fallback_audio)
     
     def _load_video_opencv(self, video_path: str, frame_load_cap: int, skip_first_frames: int,
-                          select_every_nth: int, force_rate: float, custom_width: int, custom_height: int) -> List[np.ndarray]:
-        """Load video using OpenCV with enhanced error handling"""
+                          select_every_nth: int, force_rate: float, custom_width: int, 
+                          custom_height: int) -> Tuple[List[np.ndarray], float, int]:
+        """Load video using OpenCV and return frames, fps, and total frame count"""
         
         try:
             cap = cv2.VideoCapture(video_path)
             
             if not cap.isOpened():
                 raise ValueError(f"Could not open video file: {video_path}")
+            
+            # Get original video properties
+            original_fps = cap.get(cv2.CAP_PROP_FPS)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             
             frames = []
             frame_count = 0
@@ -235,7 +272,7 @@ class Studio42VideoPatchLiftLoader:
                     frames.append(frame)
                     frames_added += 1
                     
-                    # Check frame cap
+                    # Check frame cap (applies to final processed frames)
                     if frame_load_cap > 0 and frames_added >= frame_load_cap:
                         break
                 
@@ -246,7 +283,10 @@ class Studio42VideoPatchLiftLoader:
             if not frames:
                 raise ValueError("No frames were loaded from the video")
             
-            return frames
+            # Calculate effective fps if force_rate is specified
+            effective_fps = force_rate if force_rate > 0 else original_fps
+            
+            return frames, effective_fps, len(frames)  # Return actual frame count (after processing)
             
         except Exception as e:
             logger.error(f"OpenCV video loading failed: {e}")
@@ -369,7 +409,7 @@ class Studio42VideoPatchLiftLoader:
     def _extract_patch_and_mask_from_frame(self, frame: Image.Image, patch_x: int, patch_y: int,
                                          patch_width: int, patch_height: int, patch_shape: str,
                                          corner_radius: int) -> Tuple[Image.Image, Image.Image]:
-        """Extract patch and mask from frame - UPDATED to return both"""
+        """Extract patch and mask from frame"""
         
         if patch_shape == "rectangle":
             # Extract rectangular patch normally
@@ -428,6 +468,93 @@ class Studio42VideoPatchLiftLoader:
         draw.pieslice([x1, y2 - radius * 2, x1 + radius * 2, y2], 90, 180, outline=outline, fill=fill)
         draw.pieslice([x2 - radius * 2, y2 - radius * 2, x2, y2], 0, 90, outline=outline, fill=fill)
 
+    # ---------- Audio helpers (robust, Comfy-format) ----------
+    def _extract_audio_from_video(self, video_path: str, duration_hint: float):
+        """
+        Return ComfyUI AUDIO dict {'waveform': [B,C,S], 'sample_rate': int}.
+        1) Try MoviePy, resampling to 44.1kHz.
+        2) If that fails, try ffmpeg -> WAV, then load with torchaudio/soundfile.
+        3) If all fail or no track, return silence sized to duration_hint.
+        """
+        TARGET_SR = 44100
+
+        # --- Try MoviePy first ---
+        if MOVIEPY_AVAILABLE:
+            clip = None
+            try:
+                clip = mpy.VideoFileClip(video_path, audio=True)
+                if clip.audio is None:
+                    raise RuntimeError("No audio track in video.")
+                # Force a stable, common rate for Comfy audio (matches many core paths)
+                sr = int(TARGET_SR)
+                audio_np = clip.audio.to_soundarray(fps=sr)  # shape [S, C], float in [-1, 1]
+                if audio_np.ndim == 1:
+                    audio_np = np.expand_dims(audio_np, axis=1)  # [S,1]
+                # Convert to torch [C, S] float32 contiguous
+                audio_tensor = torch.from_numpy(audio_np.astype(np.float32)).t().contiguous()
+                # Sanity: clamp and ensure at least mono
+                if audio_tensor.numel() == 0:
+                    raise RuntimeError("MoviePy returned empty audio.")
+                audio_tensor = torch.clamp(audio_tensor, -1.0, 1.0)
+                # Package as [B,C,S]
+                return {"waveform": audio_tensor.unsqueeze(0), "sample_rate": sr}
+            except Exception as e:
+                logger.warning(f"MoviePy audio extraction failed ({e}); trying ffmpeg fallback.")
+            finally:
+                try:
+                    if clip is not None:
+                        clip.close()
+                except Exception:
+                    pass
+
+        # --- Fallback: ffmpeg -> WAV, then load with torchaudio/soundfile ---
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if ffmpeg_bin is not None:
+            tmp_wav = os.path.join(folder_paths.get_temp_directory(), "__studio42_tmp_audio.wav")
+            try:
+                # -vn: no video, -ac 2: stereo, -ar TARGET_SR: sample rate, -f wav: PCM WAV container
+                cmd = [
+                    ffmpeg_bin, "-y", "-i", video_path, "-vn",
+                    "-ac", "2", "-ar", str(TARGET_SR),
+                    "-f", "wav", tmp_wav
+                ]
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+                if TORCHAUDIO_AVAILABLE:
+                    # torchaudio.load -> [C,S], sr
+                    waveform, sr = torchaudio.load(tmp_wav)
+                    if waveform.dtype != torch.float32:
+                        waveform = waveform.to(torch.float32) / (torch.iinfo(waveform.dtype).max if waveform.dtype.is_floating_point == False else 1.0)
+                    waveform = torch.clamp(waveform.contiguous(), -1.0, 1.0)
+                    return {"waveform": waveform.unsqueeze(0), "sample_rate": int(sr)}
+                elif SOUNDFILE_AVAILABLE:
+                    data, sr = sf.read(tmp_wav, dtype="float32")  # data [S,C] or [S]
+                    if data.ndim == 1:
+                        data = np.expand_dims(data, axis=1)
+                    waveform = torch.from_numpy(data).t().contiguous()  # [C,S]
+                    waveform = torch.clamp(waveform, -1.0, 1.0)
+                    return {"waveform": waveform.unsqueeze(0), "sample_rate": int(sr)}
+            except Exception as e:
+                logger.warning(f"ffmpeg fallback failed ({e}); will use silence.")
+            finally:
+                try:
+                    if os.path.exists(tmp_wav):
+                        os.remove(tmp_wav)
+                except Exception:
+                    pass
+
+        # --- Last resort: generate silence (keeps graph running) ---
+        if duration_hint is None or not np.isfinite(duration_hint) or duration_hint <= 0:
+            duration_hint = 1.0
+        return self._make_silence_audio(duration_hint, TARGET_SR, 2)
+
+    def _make_silence_audio(self, duration_sec: float, sample_rate: int, channels: int):
+        """Create a silent AUDIO dict of given duration/sample_rate/channels."""
+        num_samples = int(max(0.01, duration_sec) * sample_rate)
+        # [B,C,S] where B=1
+        waveform = torch.zeros(1, channels, num_samples, dtype=torch.float32)
+        return {"waveform": waveform, "sample_rate": int(sample_rate)}
+
 
 # Node mapping for ComfyUI
 NODE_CLASS_MAPPINGS = {
@@ -435,5 +562,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "Studio42VideoPatchLiftLoader": "🎬 Studio42 Video PatchLift Loader"
+    "Studio42VideoPatchLiftLoader": "Studio42 Video PatchLift Loader"
 }
