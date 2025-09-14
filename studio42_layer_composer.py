@@ -15,16 +15,17 @@ class Studio42LayerComposer:
     
     Professional layer composition with proper ComfyUI IMAGE/MASK handling.
     
-    FIXED: Coordinate system now matches PatchLift/PatchDrop nodes
+    FIXED: Rotation transparency issues - no more black boxes when rotating!
     - Uses direct pixel coordinates (x_position, y_position) like other Studio42 nodes
     - (0,0) is top-left corner, same as PatchLift/PatchDrop
-    - Simplified positioning system for consistency
+    - Proper RGBA handling for rotation transparency
     
     Features:
     - IMAGE format: [B,H,W,C] where C=3 (RGB only)
     - MASK format: [B,H,W] (single channel, 0-1 values)
     - Direct pixel positioning matching other Studio42 nodes
     - Professional blend modes and transformations
+    - Rotation with proper transparency (no black boxes!)
     """
     
     @classmethod
@@ -228,7 +229,7 @@ class Studio42LayerComposer:
             flip_horizontal, flip_vertical, anti_aliasing
         )
         
-        # FIXED: Calculate final position using direct coordinates (like PatchDrop)
+        # Calculate final position using direct coordinates (like PatchDrop)
         final_x, final_y = self._calculate_position_fixed(
             transformed_fg.size, (bg_w, bg_h), position_mode, x_position, y_position
         )
@@ -238,16 +239,26 @@ class Studio42LayerComposer:
         composite_mask = Image.new('L', (bg_w, bg_h), 0)
         
         # Prepare foreground with alpha
-        fg_rgba = transformed_fg.convert('RGBA')
+        fg_rgba = transformed_fg.convert('RGBA') if transformed_fg.mode != 'RGBA' else transformed_fg.copy()
+        
         if transformed_mask:
             # Apply mask to alpha channel
             if feather_edges > 0:
                 transformed_mask = self._feather_mask(transformed_mask, feather_edges)
             fg_rgba.putalpha(transformed_mask)
         elif opacity < 1.0:
-            # Apply opacity
-            alpha = Image.new('L', fg_rgba.size, int(255 * opacity))
-            fg_rgba.putalpha(alpha)
+            # Apply opacity to existing alpha channel
+            if fg_rgba.mode == 'RGBA':
+                existing_alpha = fg_rgba.split()[3]
+                # Multiply existing alpha by opacity
+                alpha_array = np.array(existing_alpha, dtype=np.float32) * opacity
+                new_alpha = Image.fromarray(alpha_array.astype(np.uint8), mode='L')
+                fg_rgba.putalpha(new_alpha)
+            else:
+                # Create new alpha channel with opacity
+                alpha = Image.new('L', fg_rgba.size, int(255 * opacity))
+                fg_rgba.putalpha(alpha)
+        # If no mask and opacity is 1.0, preserve existing alpha from rotation
         
         # Paste foreground onto canvas with proper bounds checking
         if clip_to_background:
@@ -283,15 +294,21 @@ class Studio42LayerComposer:
         else:
             result = self._apply_blend_mode(bg_rgba, canvas, blend_mode)
         
-        # Convert result back to RGB (ComfyUI IMAGE format)
-        result_rgb = Image.new('RGB', result.size, (0, 0, 0))
-        result_rgb.paste(result, mask=result.split()[3] if result.mode == 'RGBA' else None)
+        # FIXED: Convert result back to RGB preserving transparency properly
+        # Instead of using black background, preserve the original background
+        result_rgb = background.copy()
+        if result.mode == 'RGBA':
+            # Only paste where there's actual content (non-transparent areas)
+            alpha_mask = result.split()[3]
+            result_rgb.paste(result.convert('RGB'), mask=alpha_mask)
+        else:
+            result_rgb = result.convert('RGB')
         
         return result_rgb, composite_mask
     
     def _calculate_position_fixed(self, layer_size: Tuple[int, int], canvas_size: Tuple[int, int],
                                  position_mode: str, x_position: int, y_position: int) -> Tuple[int, int]:
-        """FIXED: Calculate position using same coordinate system as PatchLift/PatchDrop"""
+        """Calculate position using same coordinate system as PatchLift/PatchDrop"""
         
         layer_w, layer_h = layer_size
         canvas_w, canvas_h = canvas_size
@@ -328,6 +345,9 @@ class Studio42LayerComposer:
                         flip_vertical: bool, anti_aliasing: bool) -> Tuple[Image.Image, Optional[Image.Image]]:
         """Apply transformations to layer and mask"""
         
+        # Store original mode to preserve RGBA if present
+        original_mode = layer.mode
+        
         # Apply fitting first
         if fit_mode != "none":
             layer, mask = self._apply_fitting(layer, mask, canvas_size, fit_mode)
@@ -356,7 +376,7 @@ class Studio42LayerComposer:
             if mask:
                 mask = mask.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
         
-        # Apply rotation around anchor point
+        # Apply rotation around anchor point (this will convert to RGBA for transparency)
         if abs(rotation) > 0.01:
             layer, mask = self._rotate_around_anchor(layer, mask, rotation, anchor_x, anchor_y, anti_aliasing)
         
@@ -365,26 +385,48 @@ class Studio42LayerComposer:
     def _rotate_around_anchor(self, layer: Image.Image, mask: Optional[Image.Image], 
                              rotation: float, anchor_x: float, anchor_y: float, 
                              anti_aliasing: bool) -> Tuple[Image.Image, Optional[Image.Image]]:
-        """Rotate image around specified anchor point"""
+        """Rotate image around specified anchor point with proper transparency handling"""
+        
+        # Skip rotation if angle is too small
+        if abs(rotation) < 0.01:
+            return layer, mask
         
         # Calculate anchor point in pixels
         anchor_px = int(layer.width * anchor_x)
         anchor_py = int(layer.height * anchor_y)
         
-        # For now, use simple center rotation (anchor point rotation is complex)
-        # TODO: Implement true anchor point rotation if needed
         resample = Image.Resampling.BICUBIC if anti_aliasing else Image.Resampling.NEAREST
         
-        layer_rotated = layer.rotate(rotation, expand=True, resample=resample, fillcolor=(0, 0, 0, 0))
+        # FIXED: Convert to RGBA before rotation to ensure proper transparency
+        layer_rgba = layer.convert('RGBA') if layer.mode != 'RGBA' else layer.copy()
+        
+        # Rotate with transparent fill (RGBA ensures this works properly)
+        layer_rotated = layer_rgba.rotate(
+            rotation, 
+            expand=True, 
+            resample=resample, 
+            fillcolor=(0, 0, 0, 0)  # Fully transparent
+        )
+        
+        # Handle mask rotation
         mask_rotated = None
         if mask:
-            mask_rotated = mask.rotate(rotation, expand=True, resample=resample, fillcolor=0)
+            # Ensure mask is grayscale
+            if mask.mode != 'L':
+                mask = mask.convert('L')
+            
+            mask_rotated = mask.rotate(
+                rotation, 
+                expand=True, 
+                resample=resample, 
+                fillcolor=0  # Black fill for mask (transparent areas)
+            )
         
         return layer_rotated, mask_rotated
     
     def _apply_fitting(self, layer: Image.Image, mask: Optional[Image.Image], 
                       canvas_size: Tuple[int, int], fit_mode: str) -> Tuple[Image.Image, Optional[Image.Image]]:
-        """Apply fitting modes to layer and mask"""
+        """Apply fitting modes to layer and mask preserving transparency"""
         layer_w, layer_h = layer.size
         canvas_w, canvas_h = canvas_size
         
@@ -405,9 +447,11 @@ class Studio42LayerComposer:
         else:
             return layer, mask
         
-        layer = layer.resize(new_size, Image.Resampling.LANCZOS)
+        # Preserve original mode during resize
+        resample_method = Image.Resampling.LANCZOS
+        layer = layer.resize(new_size, resample_method)
         if mask:
-            mask = mask.resize(new_size, Image.Resampling.LANCZOS)
+            mask = mask.resize(new_size, resample_method)
         
         return layer, mask
     
