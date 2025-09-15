@@ -409,9 +409,6 @@ Check the `examples/` directory for sample workflows demonstrating:
 - **Community Forum:** [Discussions](https://github.com/your-repo/Studio42-ComfyUI/discussions)
 - **Bug Reports:** [Issues](https://github.com/your-repo/Studio42-ComfyUI/issues)
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## 🤝 Contributing
 
@@ -446,3 +443,4 @@ For support and updates:
 
 
 🎬 *Transform your ComfyUI workflows with professional-grade editing capabilities*
+
