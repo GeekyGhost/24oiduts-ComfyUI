@@ -1,10 +1,12 @@
-# Studio42 Background Removal, Video & Audio Processing - Requirements
-# Only install what's actually needed
+# Studio42 LCARS Edition v3.0.0 - Requirements
+# Only install what's actually needed - graceful fallback for optional features
 
-# Core requirements (always needed)
+# ==================== CORE REQUIREMENTS (Always Needed) ====================
 Pillow>=10.3.0
 opencv-python>=4.9.0.80
 numpy>=1.26.4
+
+# ==================== CLASSIC STUDIO42 NODES ====================
 
 # For rembg models (optional - graceful fallback)
 onnxruntime-gpu>=1.18.0
@@ -21,5 +23,28 @@ ffmpeg-python>=0.2.0
 torchaudio>=2.0.0
 soundfile>=0.12.1
 
-# Everything else (torch, PIL, numpy, opencv) is already in ComfyUI
-# Note: System FFmpeg installation recommended for optimal video/audio performance
+# ==================== LCARS NODES ====================
+
+# For Qwen AI models (optional - graceful fallback)
+# transformers>=4.30.0  # Already listed above
+torch>=2.0.0  # Usually included with ComfyUI
+
+# For Wan video models (optional - graceful fallback)
+diffusers>=0.25.0
+
+# For procedural generation enhancements (optional)
+scipy>=1.11.0
+
+# ==================== FULL FEATURE INSTALLATION ====================
+# To install everything at once:
+#   pip install -r requirements.txt
+
+# ==================== MINIMAL INSTALLATION ====================
+# For just the base LCARS features (no AI models):
+#   pip install Pillow opencv-python numpy
+
+# ==================== NOTES ====================
+# - PyTorch is usually included with ComfyUI
+# - System FFmpeg installation recommended for optimal video/audio performance
+# - All LCARS nodes have graceful fallbacks if dependencies are missing
+# - Check LCARS_README.md for detailed installation instructions
