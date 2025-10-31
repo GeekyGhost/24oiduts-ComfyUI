@@ -68,15 +68,13 @@ class LCARSBaseNode(ABC):
         """
         return (cls.RETURN_TYPES, cls.RETURN_NAMES)
 
+    # ComfyUI required class attribute
+    CATEGORY = "Studio42/LCARS"
+
     @classmethod
     def category(cls) -> str:
-        """Override to set custom category. Default is Studio42/LCARS"""
-        return "Studio42/LCARS"
-
-    @property
-    def CATEGORY(self):
-        """ComfyUI required property"""
-        return self.category()
+        """Override to set custom category. Returns CATEGORY class attribute."""
+        return cls.CATEGORY
 
     @abstractmethod
     def process(self, **kwargs) -> Tuple[Any, ...]:
@@ -236,10 +234,7 @@ class LCARSImageNode(LCARSBaseNode):
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
-
-    @classmethod
-    def category(cls) -> str:
-        return "Studio42/LCARS/Image"
+    CATEGORY = "Studio42/LCARS/Image"
 
 
 class LCARSGeneratorNode(LCARSBaseNode):
@@ -250,10 +245,7 @@ class LCARSGeneratorNode(LCARSBaseNode):
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
-
-    @classmethod
-    def category(cls) -> str:
-        return "Studio42/LCARS/Generators"
+    CATEGORY = "Studio42/LCARS/Generators"
 
     @staticmethod
     def create_blank_tensor(width: int, height: int,
@@ -284,12 +276,10 @@ class LCARSModelNode(LCARSBaseNode):
     Provides model loading and caching utilities.
     """
 
+    CATEGORY = "Studio42/LCARS/Models"
+
     # Class variable for model cache
     _model_cache: Dict[str, Any] = {}
-
-    @classmethod
-    def category(cls) -> str:
-        return "Studio42/LCARS/Models"
 
     @classmethod
     def load_model(cls, model_name: str,
@@ -338,9 +328,7 @@ class LCARSComboNode(LCARSBaseNode):
     Base class for nodes that combine multiple inputs/operations.
     """
 
-    @classmethod
-    def category(cls) -> str:
-        return "Studio42/LCARS/Combo"
+    CATEGORY = "Studio42/LCARS/Combo"
 
     @staticmethod
     def blend_images(image1: torch.Tensor,
