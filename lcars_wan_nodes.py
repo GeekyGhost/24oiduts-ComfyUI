@@ -14,7 +14,7 @@ import torch
 import numpy as np
 from PIL import Image
 from typing import Dict, List, Tuple, Any, Optional
-from lcars_base_node import LCARSModelNode, LCARSImageNode, register_node
+from .lcars_base_node import LCARSModelNode, LCARSImageNode, register_node
 
 # Optional imports
 try:
