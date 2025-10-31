@@ -16,7 +16,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 import math
 from typing import Dict, List, Tuple, Any, Optional
-from lcars_base_node import LCARSGeneratorNode, LCARSImageNode, register_node
+from .lcars_base_node import LCARSGeneratorNode, LCARSImageNode, register_node
 
 
 class ProceduralNoiseGenerator(LCARSGeneratorNode):
